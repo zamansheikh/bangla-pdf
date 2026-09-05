@@ -1,0 +1,8 @@
+# `files` in package.json is the allowlist; this is belt and braces.
+src/
+test/
+scratch/
+example/
+tsup.config.ts
+vitest.config.ts
+tsconfig.json

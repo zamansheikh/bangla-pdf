@@ -1,0 +1,99 @@
+{
+  "name": "bangla-pdf",
+  "version": "0.1.0",
+  "description": "Correctly shaped Bangla (Bengali) text in PDFs, and reading it back out. HarfBuzz shaping, Type0/Identity-H CID fonts with /ActualText so copy-paste returns the original Unicode.",
+  "keywords": [
+    "bangla",
+    "bengali",
+    "pdf",
+    "harfbuzz",
+    "shaping",
+    "pdf-lib",
+    "bijoy",
+    "unicode",
+    "opentype"
+  ],
+  "license": "BSD-3-Clause",
+  "author": "Zaman Sheikh <zaman6545@gmail.com> (https://github.com/zamansheikh)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zamansheikh/bangla-pdf.git"
+  },
+  "bugs": {
+    "url": "https://github.com/zamansheikh/bangla-pdf/issues"
+  },
+  "homepage": "https://github.com/zamansheikh/bangla-pdf#readme",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./extract": {
+      "import": {
+        "types": "./dist/extract.d.ts",
+        "default": "./dist/extract.js"
+      },
+      "require": {
+        "types": "./dist/extract.d.cts",
+        "default": "./dist/extract.cjs"
+      }
+    },
+    "./assets/Kalpurush.ttf": "./assets/Kalpurush.ttf",
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "browser": {
+    "node:fs/promises": false
+  },
+  "files": [
+    "dist",
+    "assets",
+    "LICENSE",
+    "LICENSE-FONTS.txt",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build"
+  },
+  "peerDependencies": {
+    "pdf-lib": "^1.17.1"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
+    "fflate": "^0.8.3",
+    "harfbuzzjs": "^1.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^4.10.38",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "allowScripts": {
+    "esbuild@0.27.7": true,
+    "esbuild@0.21.5": true
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
