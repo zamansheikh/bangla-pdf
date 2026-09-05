@@ -166,9 +166,11 @@ the web.
 
 ## How well does it work?
 
-Every number below is produced by `npm test` on this machine, over the 253-case
-corpus in [`test/corpus/bangla_cases.json`](test/corpus/bangla_cases.json)
-(copied verbatim from the Dart package; 251 of the 253 have text to draw).
+Every number below is produced by `npm test`, over the 253-case corpus in
+[`test/corpus/bangla_cases.json`](test/corpus/bangla_cases.json) (copied verbatim
+from the Dart package; 251 of the 253 have text to draw). All of them reproduce
+in [CI](.github/workflows/ci.yml) on Ubuntu, against a different build of
+HarfBuzz and poppler than the one they were developed against.
 
 ### Text survives the round trip
 
@@ -197,12 +199,14 @@ offset, or a subsetter that dropped an outline. So each case is also drawn by
 this package and by `hb-view`, rasterised by the same poppler at the same size,
 cropped to its ink and overlaid:
 
-**238 cases · 98.2% mean ink overlap · 91.4% at worst.**
+**238 cases · 98.2% mean ink overlap · 91.4% at worst** on macOS;
+**98.9% mean · 94.7% at worst** on the Ubuntu CI runner.
 
 It cannot reach 100% — two renderings of identical glyphs disagree along every
-antialiased edge. The other 13 cases are longer than 24 characters and would be
-clipped by the fixed comparison page rather than laid out differently, so they
-are not pixel-compared.
+antialiased edge, and how much they disagree depends on the rasteriser, which is
+why the two platforms differ. The other 13 cases are longer than 24 characters
+and would be clipped by the fixed comparison page rather than laid out
+differently, so they are not pixel-compared.
 
 ### Reading Bangla back out
 
