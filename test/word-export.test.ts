@@ -74,7 +74,7 @@ describe('a Word export with a scrambled text layer', () => {
     const words = result.text.match(/[ঀ-৿]+/g) ?? [];
     const bad = malformedWords(result.text);
     expect(words.length).toBeGreaterThan(10_000);
-    // One word at the time of writing, out of over fourteen thousand.
+    // None at the time of writing, out of nearly fourteen thousand.
     expect(bad.length / words.length, bad.slice(0, 20).join(' ')).toBeLessThan(0.002);
   });
 
@@ -108,6 +108,15 @@ describe('a Word export with a scrambled text layer', () => {
     // Drawn with the vowel sign before the ya-phala.
     expect(text).toContain(nfd('ন্যূনতম'));
     expect(text).not.toMatch(/[\u09BE-\u09CC]\u09CD/u);
+  });
+
+  it('drops the dotted circle Word draws where a word crosses formatting spans', () => {
+    // Page 46 draws মূল and ্যায়নের as separate spans; Word's shaper puts ◌ in
+    // front of the virama that starts the second.
+    const page = nfd(result.pages[45]!.text);
+    expect(page).toContain(nfd('প্রান্তিক মূল্যায়নের পূর্বে'));
+    expect(result.text).not.toContain('\u25CC');
+    expect(malformedWords(result.text)).toEqual([]);
   });
 
   it('does not split words inside table cells', () => {

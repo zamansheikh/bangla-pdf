@@ -148,7 +148,10 @@ export class GlyphReverseMap {
       const text = this.textForGid.get(gids[i]!) ?? fallback?.(i);
       if (text !== undefined && text.length > 0) pieces.push(text);
     }
-    return this.verify(recompose(signsAfterConjuncts(toLogicalOrder(pieces))), gids);
+    return this.verify(
+      recompose(signsAfterConjuncts(toLogicalOrder(withoutInsertedDottedCircles(pieces)))),
+      gids,
+    );
   }
 
   /**
@@ -310,6 +313,29 @@ function splitFusedReph(pieces: string[]): string[] {
  * zero-width joiner the same glyph as a space, so `ল‍্যা`, typed with a joiner,
  * is drawn as ল, space glyph, ্যা; read back literally it becomes `ল ্যা`.
  */
+/**
+ * Drops the dotted circles a shaper inserted inside a word.
+ *
+ * A shaper draws `◌` before a sign that has no consonant to attach to. Word
+ * shapes each formatting span on its own, so a word split across two spans —
+ * `মূল` then `্যায়নের` — is drawn with a dotted circle where they meet, and
+ * its CMap names that glyph `্`: nobody typed it. A circle an author did type,
+ * to show a sign by itself (`◌া`), does not follow a Bangla letter, and stays.
+ */
+function withoutInsertedDottedCircles(pieces: string[]): string[] {
+  return pieces.filter((piece, i) => {
+    if (piece !== DOTTED_CIRCLE || i === 0) return true;
+    const before = pieces[i - 1]!;
+    const last = before.codePointAt(before.length - 1)!;
+    const inWord = last >= 0x0980 && last <= 0x09ff;
+    const first = pieces[i + 1]?.codePointAt(0);
+    const sign = first !== undefined && (first === VIRAMA || isMark(first));
+    return !(inWord && sign);
+  });
+}
+
+const DOTTED_CIRCLE = '\u25CC';
+
 function startsWithDependent(piece: string | undefined): boolean {
   const first = piece?.codePointAt(0);
   if (first === undefined) return false;
