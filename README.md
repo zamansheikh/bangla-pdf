@@ -229,7 +229,7 @@ differently, so they are not pixel-compared.
   | poppler (`pdftotext`) | 24.8% |
   | this package, 0.1.0 | 23.4% |
   | this package, 0.2.0 | 1 of 14,448 |
-  | this package, unreleased | **1 of 13,993** |
+  | this package, 0.2.1 | **1 of 13,993** |
 
   The swaps depend on each document's words, so a fixed correction table
   cannot undo them; the extractor notices a CMap that contradicts its own font
