@@ -230,7 +230,7 @@ differently, so they are not pixel-compared.
   | this package, 0.1.0 | 23.4% |
   | this package, 0.2.0 | 1 of 14,448 |
   | this package, 0.2.1 | 1 of 13,993 |
-  | this package, unreleased | **none of 13,992** |
+  | this package, 0.2.2 | **none of 13,992** |
 
   The swaps depend on each document's words, so a fixed correction table
   cannot undo them; the extractor notices a CMap that contradicts its own font

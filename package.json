@@ -1,6 +1,6 @@
 {
   "name": "bangla-pdf",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Correctly shaped Bangla (Bengali) text in PDFs, and reading it back out. HarfBuzz shaping, Type0/Identity-H CID fonts with /ActualText so copy-paste returns the original Unicode.",
   "keywords": [
     "bangla",
