@@ -11,6 +11,7 @@
  */
 
 import { OtFont } from '../ot/ot-font.js';
+import { decomposeBengali } from './bengali.js';
 import { looksLikeBijoyFontName } from './bijoy.js';
 import { GlyphReverseMap, type Replay } from './glyph-reverse.js';
 import { PdfLexer } from './lexer.js';
@@ -236,7 +237,17 @@ export class FontInfo {
       this.replayFactory !== null && this.embeddedBytes !== null
         ? this.replayFactory(font, this.embeddedBytes)
         : null;
-    const map = GlyphReverseMap.build(font, replay);
+    // What the document claims each glyph is, for the one use the map makes of
+    // it: naming vowel signs a subsetter pruned from the font's cmap.
+    const documentText = new Map<number, string[]>();
+    for (const [code, text] of this.toUnicode) {
+      if (text.length === 0) continue;
+      const gid = this.glyphFor(code);
+      const list = documentText.get(gid);
+      if (list === undefined) documentText.set(gid, [text]);
+      else list.push(text);
+    }
+    const map = GlyphReverseMap.build(font, replay, documentText);
     return (this.reverseMapCache = map.isEmpty ? null : map);
   }
 
@@ -475,18 +486,4 @@ function parseToUnicode(data: Uint8Array, out: Map<number, string>): boolean {
     }
   }
   return twoByte;
-}
-
-/**
- * Splits the Bengali characters Unicode writes two ways into their parts, so a
- * CMap entry and a font's `cmap` can be compared however either spells them:
- * `ো` as `ে` + `া`, `ৌ` as `ে` + `ৗ`, and the nukta letters as base + nukta.
- */
-function decomposeBengali(text: string): string {
-  return text
-    .replaceAll('ো', 'ো')
-    .replaceAll('ৌ', 'ৌ')
-    .replaceAll('ড়', 'ড়')
-    .replaceAll('ঢ়', 'ঢ়')
-    .replaceAll('য়', 'য়');
 }

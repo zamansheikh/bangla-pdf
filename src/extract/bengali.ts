@@ -145,3 +145,28 @@ export function categoryOf(cp: number): IndicCategory {
 export function isPreBaseMatra(cp: number): boolean {
   return cp === 0x09bf || cp === 0x09c7 || cp === 0x09c8; // ি ে ৈ
 }
+
+/**
+ * Splits the Bengali characters Unicode writes two ways into their parts, so
+ * texts can be compared however either spells them: `ো` as `ে` + `া`, `ৌ` as
+ * `ে` + `ৗ`, and the nukta letters as base + nukta.
+ */
+export function decomposeBengali(text: string): string {
+  return text
+    .replaceAll('\u09CB', '\u09C7\u09BE')
+    .replaceAll('\u09CC', '\u09C7\u09D7')
+    .replaceAll('\u09DC', '\u09A1\u09BC')
+    .replaceAll('\u09DD', '\u09A2\u09BC')
+    .replaceAll('\u09DF', '\u09AF\u09BC');
+}
+
+/** Whether [cp] is a dependent sign that attaches to a consonant. */
+export function isDependentSign(cp: number): boolean {
+  const category = categoryOf(cp);
+  return (
+    category === IndicCategory.matra ||
+    category === IndicCategory.syllableModifier ||
+    category === IndicCategory.nukta
+  );
+}
+

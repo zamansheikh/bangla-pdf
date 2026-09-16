@@ -228,15 +228,19 @@ differently, so they are not pixel-compared.
   |---|---|
   | poppler (`pdftotext`) | 24.8% |
   | this package, 0.1.0 | 23.4% |
-  | this package, 0.2.0 | **1 of 14,448** |
+  | this package, 0.2.0 | 1 of 14,448 |
+  | this package, unreleased | **1 of 13,993** |
 
   The swaps depend on each document's words, so a fixed correction table
   cannot undo them; the extractor notices a CMap that contradicts its own font
   and reads the glyphs back through the font instead. Its SutonnyMJ runs are
   genuine Bijoy and convert cleanly, and the four scanned pages among them are
-  offered to `ocrHook`.
+  offered to `ocrHook`. Since 0.2.0, vowel signs Word's subset pruned from the
+  font (`তৃতীয়` had come back `র্ততীয়`, all 37 times) are recovered, and words
+  in table cells are no longer split (`ব ণ্ট ন`); the word count falls because
+  about 450 such splits are gone.
 
-**78 tests.** `hb-shape`, `hb-view` and `pdftotext` are needed for the
+**80 tests.** `hb-shape`, `hb-view` and `pdftotext` are needed for the
 differential tests (`brew install harfbuzz poppler`); those tests skip without
 them, and the rest of the suite runs anyway.
 
@@ -272,8 +276,8 @@ These are measured, not guessed.
   font, the text is reconstructed from the glyphs and checked by re-shaping it
   with HarfBuzz, and `confidence` counts such text at 0.75 rather than 1. It
   needs the embedded font to keep its `cmap` and `GSUB`, which Word's subsets
-  do. In the measured document one table header still comes back split,
-  `শ্রে ণি`.
+  do. A vowel sign the subset pruned from the font's `cmap` is named only when
+  the document's other ligatures agree on it.
 - **Un-shaping needs the font's `GSUB`.** Recovering text from glyph ids alone
   reconstructs what most likely drew them. If the producer's subsetter dropped
   `GSUB` — many do, **this one included** — only characters the `cmap` reaches

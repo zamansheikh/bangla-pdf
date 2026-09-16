@@ -96,6 +96,32 @@ describe('a Word export with a scrambled text layer', () => {
     }
   });
 
+  it('names vowel signs the font subset pruned from its cmap', () => {
+    // `তৃ` is one glyph, and ৃ is not in the subset's cmap. Word's CMap calls the
+    // glyph `র্ত`, having first met it in কর্তৃপক্ষ, where the reph follows it.
+    const text = nfd(result.text);
+    const count = (word: string) => text.split(nfd(word)).length - 1;
+    expect(count('র্ততীয়')).toBe(0);
+    expect(count('তৃতীয়')).toBeGreaterThanOrEqual(37);
+    expect(text).toContain(nfd('কর্তৃপক্ষ'));
+    expect(text).toContain(nfd('নেতৃত্বে'));
+    // Drawn with the vowel sign before the ya-phala.
+    expect(text).toContain(nfd('ন্যূনতম'));
+    expect(text).not.toMatch(/[\u09BE-\u09CC]\u09CD/u);
+  });
+
+  it('does not split words inside table cells', () => {
+    // Word clips each glyph of a cell with `q … re W* n … Q`, which says nothing
+    // about words; its spaces there are one-byte `( )` shows.
+    const text = nfd(result.text);
+    for (const split of ['ব ণ্ট ন', 'খ্রী ষ্ট', 'ঘ ণ্টা', 'উ ত্তর']) {
+      expect(text, split).not.toContain(nfd(split));
+    }
+    for (const passage of ['বণ্টন', 'খ্রীষ্ট', '১:০০ ঘণ্টা', 'একাধিক অংশ থাকবে না', 'জ্ঞান- ৩টি, দক্ষতা- ৩টি']) {
+      expect(text, passage).toContain(nfd(passage));
+    }
+  });
+
   it('does not invent symbols from bytes that are not glyphs', () => {
     // A space shown as one byte with a two-byte font was read as glyph 32, `=`,
     // thousands of times. What is left are the formulas' own equals signs.

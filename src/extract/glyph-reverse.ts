@@ -23,7 +23,9 @@ import type { OtFont } from '../ot/ot-font.js';
 import { Coverage, type OtData } from '../ot/reader.js';
 import {
   categoryOf,
+  decomposeBengali,
   IndicCategory,
+  isDependentSign,
   isPreBaseMatra,
   MATRA_DECOMPOSITION,
   NUKTA_COMPOSITION,
@@ -65,8 +67,18 @@ export class GlyphReverseMap {
     private readonly replay: Replay | null,
   ) {}
 
-  /** Builds the map for [font]. Cheap enough to do once per font. */
-  static build(font: OtFont, replay: Replay | null): GlyphReverseMap {
+  /**
+   * Builds the map for [font]. Cheap enough to do once per font.
+   *
+   * [documentText] is what the document itself claims each glyph id stands
+   * for, when it says anything. It is never taken at its word — see
+   * [learnPrunedSigns] for the one narrow use made of it.
+   */
+  static build(
+    font: OtFont,
+    replay: Replay | null,
+    documentText?: ReadonlyMap<number, readonly string[]>,
+  ): GlyphReverseMap {
     // Seed with what the cmap says outright. Lower codepoints win when several
     // map to one glyph, which keeps the base character rather than a variant.
     const direct = new Map<number, number>();
@@ -89,6 +101,8 @@ export class GlyphReverseMap {
         invertLookup(font.d, gsub.lookupOffset(i), sources, viramaFirst.has(i));
       }
     }
+
+    if (documentText !== undefined) learnPrunedSigns(direct, sources, documentText);
 
     // Resolve each glyph to codepoints, expanding substitutions until only
     // cmap-reachable glyphs remain.
@@ -134,7 +148,7 @@ export class GlyphReverseMap {
       const text = this.textForGid.get(gids[i]!) ?? fallback?.(i);
       if (text !== undefined && text.length > 0) pieces.push(text);
     }
-    return this.verify(recompose(toLogicalOrder(pieces)), gids);
+    return this.verify(recompose(signsAfterConjuncts(toLogicalOrder(pieces))), gids);
   }
 
   /**
@@ -228,6 +242,20 @@ function toLogicalOrder(drawn: string[]): string {
     i++;
   }
   return out.join('');
+}
+
+/**
+ * Moves a vowel sign that precedes a virama to after the consonant it joins.
+ *
+ * A vowel sign follows the whole cluster in Unicode, so a sign directly before
+ * a virama is never a spelling. Fonts draw one anyway: `ন্যূ` is shown as `নূ`
+ * with the ya-phala after it, and read back in drawing order that is `নূ্য`.
+ */
+function signsAfterConjuncts(text: string): string {
+  return text.replace(
+    /([\u09BE-\u09CC\u09D7]+)((?:\u09CD[\u0995-\u09B9\u09DC-\u09DF]\u09BC?)+)/gu,
+    '$2$1',
+  );
 }
 
 /**
@@ -521,6 +549,83 @@ function recompose(text: string): string {
  * [seen] breaks the cycles a font can declare — a ligature whose component
  * substitutes back to itself — and [depth] bounds pathological nesting.
  */
+/**
+ * Recovers the characters of vowel signs a subsetter pruned from the `cmap`,
+ * using the document's own text — but only where the font vouches for it.
+ *
+ * Word's subsets drop `ৃ`, `ূ` and friends from the `cmap` while keeping their
+ * glyphs and every ligature built from them. Such a glyph cannot be read back,
+ * and neither can `তৃ`, one glyph built from ত and it. The document's
+ * `/ToUnicode` does name them, but that is exactly the mapping that could not
+ * be trusted in the first place: for `তৃ` Word wrote `র্ত`, having first met the
+ * glyph in `কর্তৃপক্ষ`, where the reph is drawn after it.
+ *
+ * So a claim counts only when it fits the ligature's structure. `তৃ` is built
+ * from `[ত, ?]`; a claim for it must be ত followed by one dependent sign, and
+ * `র্ত` is not. Claims that do fit — `পৃ`, `কৃ`, `গৃ` from the same document —
+ * vote on what `?` is, and a sign is adopted only when the votes clearly agree.
+ * A glyph shown on its own may vote too, if the document names it as a single
+ * sign. Nothing else about the document's mapping is used.
+ */
+function learnPrunedSigns(
+  direct: Map<number, number>,
+  sources: Map<number, Source>,
+  documentText: ReadonlyMap<number, readonly string[]>,
+): void {
+  const votes = new Map<number, Map<number, number>>();
+  const vote = (gid: number, codepoint: number): void => {
+    const tally = votes.get(gid) ?? new Map<number, number>();
+    tally.set(codepoint, (tally.get(codepoint) ?? 0) + 1);
+    votes.set(gid, tally);
+  };
+  const singleSign = (claim: string): number | null => {
+    const runes = [...decomposeBengali(claim)];
+    if (runes.length !== 1) return null;
+    const cp = runes[0]!.codePointAt(0)!;
+    return isDependentSign(cp) ? cp : null;
+  };
+
+  // Ligatures with exactly one component the font cannot name.
+  for (const [gid, source] of sources) {
+    if (source.components.length < 2) continue;
+    const claims = documentText.get(gid);
+    if (claims === undefined) continue;
+    const parts = source.components.map((c) => resolveGlyph(c, direct, sources, new Set(), 0));
+    const unknown = parts.flatMap((part, i) => (part === null ? [i] : []));
+    if (unknown.length !== 1) continue;
+    const at = unknown[0]!;
+    const missing = source.components[at]!;
+    if (direct.has(missing)) continue;
+    const before = decomposeBengali(String.fromCodePoint(...parts.slice(0, at).flat() as number[]));
+    const after = decomposeBengali(String.fromCodePoint(...parts.slice(at + 1).flat() as number[]));
+    for (const claim of claims) {
+      const whole = decomposeBengali(claim);
+      if (whole.length <= before.length + after.length) continue;
+      if (!whole.startsWith(before) || !whole.endsWith(after)) continue;
+      const sign = singleSign(whole.slice(before.length, whole.length - after.length));
+      if (sign !== null) vote(missing, sign);
+    }
+  }
+
+  // A glyph the font knows nothing about, named by the document as one sign.
+  for (const [gid, claims] of documentText) {
+    if (direct.has(gid) || sources.has(gid)) continue;
+    for (const claim of claims) {
+      const sign = singleSign(claim);
+      if (sign !== null) vote(gid, sign);
+    }
+  }
+
+  for (const [gid, tally] of votes) {
+    const ranked = [...tally.entries()].sort((a, b) => b[1] - a[1]);
+    const [best, count] = ranked[0]!;
+    const others = ranked.slice(1).reduce((sum, [, n]) => sum + n, 0);
+    // Clear agreement only: a swapped claim can slip through the structure
+    // test when a sign is exchanged with a sign, and must not decide it.
+    if (count >= 2 * others && count > others) direct.set(gid, best);
+  }
+}
+
 function resolveGlyph(
   gid: number,
   direct: Map<number, number>,

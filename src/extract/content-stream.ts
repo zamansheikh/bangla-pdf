@@ -33,8 +33,12 @@ export const WORD_GAP = -1;
  * text object in a structure tag (`/P <</MCID 13>> BDC … EMC`). Only a span that
  * carries `/ActualText` changes what its glyphs mean, and that is handled where
  * the span opens and closes.
+ *
+ * So is the graphics state. Word clips each glyph of a table cell to the cell
+ * with `q … re W* n … Q`, mid-word, and a transformation is taken into account
+ * by comparing positions in device space.
  */
-const RUN_BREAKING_OPERATORS = new Set(["'", '"', 'q', 'Q', 'cm', 'Do', 'BI']);
+const RUN_BREAKING_OPERATORS = new Set(["'", '"', 'Do', 'BI']);
 
 
 /** One run of text drawn with a single font. */
@@ -159,7 +163,13 @@ export function walkContentStream(
    * font size, as drawn — glyph advances less any `TJ` adjustments.
    */
   const collect = (font: FontInfo, codes: number[], width: number): void => {
-    if (!codes.some((code) => code >= 0)) return; // nothing drawn
+    if (!codes.some((code) => code >= 0)) {
+      // Nothing drawn, but perhaps a space meant: see [shownCodes].
+      if (codes.includes(WORD_GAP) && glyphRunAt !== null && glyphRun[glyphRun.length - 1] !== WORD_GAP) {
+        glyphRun.push(WORD_GAP);
+      }
+      return;
+    }
     const [x, y] = devicePosition();
     const scale = Math.abs(ctm[0]!) || 1;
     const em = fontSize * scale;
@@ -183,6 +193,20 @@ export function walkContentStream(
     glyphRun.push(...codes);
     glyphRunPenX = start + width * em;
     lastShowAt = [x, y];
+  };
+
+  /**
+   * The glyph codes one string shows, for reading glyphs back.
+   *
+   * Word writes the spaces of Bangla text as `( ) TJ` — a single space byte
+   * with the two-byte font still selected. That byte names no glyph and moves
+   * no pen in [FontInfo.glyphCodes], but it is where the author typed a space,
+   * and the next word is often placed less than a quarter em further on.
+   */
+  const shownCodes = (font: FontInfo, bytes: Uint8Array): number[] => {
+    const codes = font.glyphCodes(bytes);
+    if (font.twoByte && bytes.length % 2 === 1 && bytes[bytes.length - 1] === 0x20) codes.push(WORD_GAP);
+    return codes;
   };
 
   /** How far [codes] move the pen, in units of the font size. */
@@ -327,7 +351,7 @@ export function walkContentStream(
         const s = operands[operands.length - 1];
         if (s === undefined || s.kind !== 'string') break;
         if (currentFont !== null && readsGlyphsBack(currentFont)) {
-          const codes = currentFont.glyphCodes(s.bytes);
+          const codes = shownCodes(currentFont, s.bytes);
           collect(currentFont, codes, widthOf(currentFont, codes));
         } else {
           flushGlyphRun();
@@ -344,7 +368,7 @@ export function walkContentStream(
             let width = 0;
             for (const item of arr.values) {
               if (item.kind === 'string') {
-                const shown = font.glyphCodes(item.bytes);
+                const shown = shownCodes(font, item.bytes);
                 codes.push(...shown);
                 width += widthOf(font, shown);
               } else if (item.kind === 'num') {
