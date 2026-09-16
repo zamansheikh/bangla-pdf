@@ -13,6 +13,30 @@ import type { FontInfo } from './font-info.js';
 import { PdfLexer } from './lexer.js';
 import { asLatin1, asUtf16, get, type PdfObj, type PdfStringObj } from './objects.js';
 
+/**
+ * Stands for a large negative `TJ` adjustment inside a collected glyph run: the
+ * way most producers write a space without drawing one. Glyph ids are never
+ * negative, so it cannot be mistaken for a glyph.
+ */
+export const WORD_GAP = -1;
+
+/**
+ * Operators that end a run of glyphs being collected for reading back.
+ *
+ * Text objects and positioning are deliberately absent. Word places every glyph
+ * with its own `Tm`, and on a justified line gives every glyph its own `BT` …
+ * `ET` as well, so neither says where a word ends. Geometry does: a run carries
+ * on while each glyph starts where the last one finished, gains a word gap when
+ * there is empty space between them, and ends when the line changes.
+ *
+ * Marked content is absent too, for the same reason: a tagged PDF wraps every
+ * text object in a structure tag (`/P <</MCID 13>> BDC … EMC`). Only a span that
+ * carries `/ActualText` changes what its glyphs mean, and that is handled where
+ * the span opens and closes.
+ */
+const RUN_BREAKING_OPERATORS = new Set(["'", '"', 'q', 'Q', 'cm', 'Do', 'BI']);
+
+
 /** One run of text drawn with a single font. */
 export interface TextRun {
   /** The text as recovered from the font's own mapping, before any Bijoy conversion. */
@@ -94,12 +118,83 @@ export function walkContentStream(
     ctm[1]! * tx + ctm[3]! * ty + ctm[5]!,
   ];
 
-  const push = (text: string): void => {
+  const push = (text: string, font: FontInfo | null = currentFont): void => {
     const [x, y] = devicePosition();
-    runs.push({ text, font: currentFont, x, y, fontSize, objectIndex });
+    runs.push({ text, font, x, y, fontSize, objectIndex });
   };
 
-  const emit = (text: string): void => {
+  // Glyphs from a font whose mapping cannot be trusted, collected until the run
+  // they belong to ends. They are read back through the font as a whole,
+  // because Bengali is drawn out of typing order and a producer is free to split
+  // a cluster across operators: Word shows one glyph per `Tj`, so no single
+  // operator ever holds a vowel sign together with the consonant it precedes.
+  let glyphRun: number[] = [];
+  let glyphRunFont: FontInfo | null = null;
+  // Where the run started. Positioning inside it moves the pen, so the run is
+  // placed where its first glyph was drawn, not where the pen ends up.
+  let glyphRunAt: Omit<TextRun, 'text' | 'font'> | null = null;
+  // Device x where the run's next glyph would start if nothing moved the pen,
+  // and the pen position the last show began from. This parser does not
+  // advance the pen on a show, so an unchanged position means "continue".
+  let glyphRunPenX = 0;
+  let lastShowAt: [number, number] | null = null;
+
+  const flushGlyphRun = (): void => {
+    const font = glyphRunFont;
+    const codes = glyphRun;
+    const at = glyphRunAt;
+    glyphRun = [];
+    glyphRunFont = null;
+    glyphRunAt = null;
+    lastShowAt = null;
+    if (font === null || at === null || codes.length === 0) return;
+    const text = font.unshapeRun(codes);
+    if (text.length > 0) runs.push({ text, font, ...at });
+  };
+
+  /**
+   * Adds the glyphs of one show to the pending run.
+   *
+   * [width] is how far the show moves the pen, in text space units per unit of
+   * font size, as drawn — glyph advances less any `TJ` adjustments.
+   */
+  const collect = (font: FontInfo, codes: number[], width: number): void => {
+    if (!codes.some((code) => code >= 0)) return; // nothing drawn
+    const [x, y] = devicePosition();
+    const scale = Math.abs(ctm[0]!) || 1;
+    const em = fontSize * scale;
+
+    if (glyphRunAt !== null) {
+      const sameLine = Math.abs(y - glyphRunAt.y) <= Math.max(glyphRunAt.fontSize, fontSize) * 0.4;
+      if (glyphRunFont !== font || !sameLine) flushGlyphRun();
+    }
+
+    const moved = lastShowAt === null || lastShowAt[0] !== x || lastShowAt[1] !== y;
+    const start = glyphRunAt === null || moved ? x : glyphRunPenX;
+    if (glyphRunAt === null) {
+      glyphRunAt = { x, y, fontSize, objectIndex };
+    } else if (start - glyphRunPenX > em * 0.25 && glyphRun[glyphRun.length - 1] !== WORD_GAP) {
+      // Empty space between the last glyph and this one, with nothing drawn in
+      // it: a word gap written by moving the pen rather than with a space.
+      glyphRun.push(WORD_GAP);
+    }
+
+    glyphRunFont = font;
+    glyphRun.push(...codes);
+    glyphRunPenX = start + width * em;
+    lastShowAt = [x, y];
+  };
+
+  /** How far [codes] move the pen, in units of the font size. */
+  const widthOf = (font: FontInfo, codes: number[]): number => {
+    const face = font.embedded;
+    if (face === null || face.upem === 0) return 0;
+    let units = 0;
+    for (const code of codes) if (code >= 0) units += face.advance(font.glyphFor(code));
+    return units / face.upem;
+  };
+
+  const emit = (text: string, font: FontInfo | null = currentFont): void => {
     // An empty show is how a producer reopens a text object after a marked
     // content operator; it must not decide where the span sits.
     if (text.length === 0) return;
@@ -109,17 +204,22 @@ export function walkContentStream(
       push(pending);
     }
     if (suppressDepth > 0) return; // inside an /ActualText span
-    push(text);
+    push(text, font);
   };
+
+  /** Whether glyphs shown with [font] are collected and read back as a run. */
+  const readsGlyphsBack = (font: FontInfo): boolean =>
+    font.textMappingUntrusted && suppressDepth === 0 && pendingActualText === null;
 
   const decode = (s: PdfStringObj): string => {
     const font = currentFont;
     if (font === null) return asLatin1(s);
 
-    // Nothing in the document says what these codes mean, so read the glyphs
-    // back through the embedded font. Last resort, and only for a font that
-    // offers no mapping at all.
-    if (font.hasNoTextMapping) {
+    // Nothing trustworthy says what these codes mean — no mapping at all, or a
+    // /ToUnicode that contradicts the font it describes — so read the glyphs
+    // back through the embedded font instead. Never for a font whose mapping
+    // agrees with it: that is authoritative, and this is inference.
+    if (font.textMappingUntrusted) {
       const unshaped = font.unshape(font.codes(s.bytes));
       if (unshaped !== null) return unshaped;
     }
@@ -141,6 +241,12 @@ export function walkContentStream(
       if (operands.length > 64) operands.shift();
       continue;
     }
+
+    // A run ends at anything that moves the pen to a new place or changes what
+    // the glyphs mean: a new text object or line, a transformation, a marked-
+    // content boundary, an image. Colour and spacing changes do not end it; a
+    // font change is caught when the next glyph arrives.
+    if (RUN_BREAKING_OPERATORS.has(token.name)) flushGlyphRun();
 
     switch (token.name) {
       case 'q':
@@ -219,12 +325,38 @@ export function walkContentStream(
           ty = lineY;
         }
         const s = operands[operands.length - 1];
-        if (s !== undefined && s.kind === 'string') emit(decode(s));
+        if (s === undefined || s.kind !== 'string') break;
+        if (currentFont !== null && readsGlyphsBack(currentFont)) {
+          const codes = currentFont.glyphCodes(s.bytes);
+          collect(currentFont, codes, widthOf(currentFont, codes));
+        } else {
+          flushGlyphRun();
+          emit(decode(s));
+        }
         break;
       }
       case 'TJ': {
         const arr = operands[operands.length - 1];
         if (arr !== undefined && arr.kind === 'array') {
+          const font = currentFont;
+          if (font !== null && readsGlyphsBack(font)) {
+            const codes: number[] = [];
+            let width = 0;
+            for (const item of arr.values) {
+              if (item.kind === 'string') {
+                const shown = font.glyphCodes(item.bytes);
+                codes.push(...shown);
+                width += widthOf(font, shown);
+              } else if (item.kind === 'num') {
+                // Adjustments are in thousandths of the font size, subtracted.
+                width -= item.value / 1000;
+                if (item.value <= -120) codes.push(WORD_GAP);
+              }
+            }
+            collect(font, codes, width);
+            break;
+          }
+          flushGlyphRun();
           let out = '';
           for (const item of arr.values) {
             if (item.kind === 'string') out += decode(item);
@@ -248,6 +380,7 @@ export function walkContentStream(
         }
         actualTextStack.push(actual);
         if (actual !== null) {
+          flushGlyphRun();
           // The span's own text is authoritative; the glyphs inside it are
           // ignored, and it is positioned by the first of them.
           pendingActualText = actual;
@@ -263,6 +396,7 @@ export function walkContentStream(
         if (actualTextStack.length > 0) {
           const popped = actualTextStack.pop()!;
           if (popped !== null) {
+            flushGlyphRun();
             if (suppressDepth > 0) suppressDepth--;
             // A span that drew nothing still carries its text.
             if (pendingActualText !== null) {
@@ -286,6 +420,7 @@ export function walkContentStream(
     }
     operands = [];
   }
+  flushGlyphRun();
 
   return { runs, imageCount, actualTextUsed };
 }

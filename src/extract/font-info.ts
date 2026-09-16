@@ -144,6 +144,81 @@ export class FontInfo {
     return this.toUnicode.size === 0 && this.differences.size === 0;
   }
 
+  private contradictsCache: boolean | undefined;
+
+  /**
+   * Whether the `/ToUnicode` CMap disagrees with the embedded font's own `cmap`
+   * about Bengali glyphs, badly enough that it cannot be trusted.
+   *
+   * Microsoft Word writes such CMaps. It pairs glyphs with characters by
+   * position, which breaks as soon as a cluster is drawn out of typing order:
+   * `শি` is drawn `[ি, শ]` but typed `[শ, ি]`, so the CMap records ি→শ and
+   * শ→ি. Every reordered pair gets exchanged — ে with দ, র with ে, ৈ with ব —
+   * and which pairs depends on which words the document happens to contain, so
+   * no fixed correction table can undo it. The glyphs themselves are fine, and
+   * so is the font; reading them back through the font is what recovers the
+   * text.
+   *
+   * A glyph the font's `cmap` reaches directly is compared against what the
+   * CMap claims for it. An entry that includes the glyph's own character
+   * agrees — a cluster's first glyph legitimately carries the whole cluster's
+   * text — and an empty entry says nothing either way.
+   */
+  get toUnicodeContradictsFont(): boolean {
+    if (this.contradictsCache !== undefined) return this.contradictsCache;
+    return (this.contradictsCache = this.computeContradicts());
+  }
+
+  private computeContradicts(): boolean {
+    const font = this.embedded;
+    if (font === null || this.toUnicode.size === 0 || this.isBijoy) return false;
+    if (!this.codesAreGlyphIds) return false;
+
+    const bengaliOfGlyph = new Map<number, number[]>();
+    for (const [codepoint, gid] of font.cmap) {
+      if (codepoint < 0x0980 || codepoint > 0x09ff) continue;
+      const list = bengaliOfGlyph.get(gid);
+      if (list === undefined) bengaliOfGlyph.set(gid, [codepoint]);
+      else list.push(codepoint);
+    }
+    if (bengaliOfGlyph.size === 0) return false;
+
+    let agree = 0;
+    let disagree = 0;
+    for (const [code, text] of this.toUnicode) {
+      if (text.length === 0) continue;
+      const own = bengaliOfGlyph.get(this.glyphFor(code));
+      if (own === undefined) continue;
+      const claimed = decomposeBengali(text);
+      const matches = own.some((codepoint) =>
+        [...decomposeBengali(String.fromCodePoint(codepoint))].every((c) => claimed.includes(c)),
+      );
+      if (matches) agree++;
+      else disagree++;
+    }
+    // One stray entry is a font with two codepoints on one glyph, or a writer's
+    // rounding; a pattern of them is a CMap that was built wrong.
+    return disagree >= 3 && disagree * 10 >= agree + disagree;
+  }
+
+  /**
+   * Whether the document's own statement of what the codes mean should be
+   * ignored in favour of reading the glyphs back: there is none, or it
+   * contradicts the font it describes.
+   */
+  get textMappingUntrusted(): boolean {
+    // Only a CID font's codes name glyphs. A simple font's code is a byte in an
+    // encoding — WinAnsi, a symbol encoding, a Bijoy table — and reading it as
+    // a glyph id turns a space into whatever glyph 32 happens to be.
+    if (!this.codesAreGlyphIds) return false;
+    return this.hasNoTextMapping || this.toUnicodeContradictsFont;
+  }
+
+  /** Whether a code in a string is a CID, and so identifies a glyph. */
+  get codesAreGlyphIds(): boolean {
+    return this.subtype === 'Type0';
+  }
+
   private reverseMapCache: GlyphReverseMap | null | undefined;
 
   /**
@@ -156,7 +231,7 @@ export class FontInfo {
   get reverseMap(): GlyphReverseMap | null {
     if (this.reverseMapCache !== undefined) return this.reverseMapCache;
     const font = this.embedded;
-    if (font === null || !this.hasNoTextMapping) return (this.reverseMapCache = null);
+    if (font === null || !this.textMappingUntrusted) return (this.reverseMapCache = null);
     const replay =
       this.replayFactory !== null && this.embeddedBytes !== null
         ? this.replayFactory(font, this.embeddedBytes)
@@ -179,8 +254,45 @@ export class FontInfo {
   unshape(codes: number[]): string | null {
     const map = this.reverseMap;
     if (map === null) return null;
-    const text = map.decodeRun(codes.map((c) => this.glyphFor(c)));
+    const text = map.decodeRun(
+      codes.map((c) => this.glyphFor(c)),
+      (i) => this.toUnicode.get(codes[i]!),
+    );
     return text.length === 0 ? null : text;
+  }
+
+  /**
+   * Recovers the text of a collected run, which may span several show
+   * operators and contain word gaps.
+   *
+   * A negative code marks a gap written as a `TJ` adjustment rather than as a
+   * space glyph; the run is read back one word at a time between them. When the
+   * font cannot be read back at all, the document's own mapping is used, which
+   * is no worse than not collecting the run.
+   */
+  unshapeRun(codes: number[]): string {
+    let out = '';
+    let gap = false;
+    let word: number[] = [];
+    const finish = (): void => {
+      if (word.length === 0) return;
+      const text = this.unshape(word) ?? word.map((c) => this.unicodeFor(c) ?? '').join('');
+      // A gap beside a drawn space is the same space, widened by justification.
+      if (gap && out.length > 0 && !/\s$/.test(out) && !/^\s/.test(text)) out += ' ';
+      out += text;
+      gap = false;
+      word = [];
+    };
+    for (const code of codes) {
+      if (code < 0) {
+        finish();
+        gap = true;
+      } else {
+        word.push(code);
+      }
+    }
+    finish();
+    return out;
   }
 
   private isBijoyCache: boolean | undefined;
@@ -202,6 +314,13 @@ export class FontInfo {
   private computeIsBijoy(): boolean {
     const font = this.embedded;
     if (font !== null && font.hasBengaliCoverage) return false;
+    // A face carrying Bengali shaping rules is a Unicode font, whatever its cmap
+    // says. Word subsets a font once per encoding: the WinAnsi copy of NikoshBAN
+    // it uses for digits and punctuation keeps GSUB (script `beng`) but none of
+    // the Bengali cmap entries, and the name check below would then call it
+    // Bijoy and turn its ASCII into noise. A Bijoy face is addressed by Latin
+    // byte values and has no use for a Bengali script table.
+    if (font !== null && font.declaresBengaliScript) return false;
     if (looksLikeBijoyFontName(this.baseFont)) return true;
     if (font === null) return false;
     if (font.cmap.size === 0) return false;
@@ -238,6 +357,20 @@ export class FontInfo {
     for (let i = 0; i + 1 < bytes.length; i += 2) out.push((bytes[i]! << 8) | bytes[i + 1]!);
     if (bytes.length % 2 === 1) out.push(bytes[bytes.length - 1]!);
     return out;
+  }
+
+  /**
+   * The glyph ids [bytes] draw, for reading glyphs back.
+   *
+   * Unlike [codes], an incomplete trailing byte is dropped rather than kept: it
+   * is not a CID, so it names no glyph. Word emits exactly that — `( ) TJ`, one
+   * byte, with a two-byte CID font selected — and taking the byte as glyph 32
+   * draws whatever glyph 32 is. In NikoshBAN that is `=`.
+   */
+  glyphCodes(bytes: Uint8Array): number[] {
+    const codes = this.codes(bytes);
+    if (this.twoByte && bytes.length % 2 === 1) codes.pop();
+    return codes;
   }
 
   /** The text [code] represents, or null when nothing is known. */
@@ -342,4 +475,18 @@ function parseToUnicode(data: Uint8Array, out: Map<number, string>): boolean {
     }
   }
   return twoByte;
+}
+
+/**
+ * Splits the Bengali characters Unicode writes two ways into their parts, so a
+ * CMap entry and a font's `cmap` can be compared however either spells them:
+ * `ো` as `ে` + `া`, `ৌ` as `ে` + `ৗ`, and the nukta letters as base + nukta.
+ */
+function decomposeBengali(text: string): string {
+  return text
+    .replaceAll('ো', 'ো')
+    .replaceAll('ৌ', 'ৌ')
+    .replaceAll('ড়', 'ড়')
+    .replaceAll('ঢ়', 'ঢ়')
+    .replaceAll('য়', 'য়');
 }

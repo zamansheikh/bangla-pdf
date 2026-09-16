@@ -98,7 +98,7 @@ export class GlyphReverseMap {
     for (const gid of total) {
       const runes = resolveGlyph(gid, direct, sources, new Set(), 0);
       if (runes === null) continue;
-      text.set(gid, String.fromCodePoint(...runes));
+      text.set(gid, String.fromCodePoint(...preBaseMatraLast(runes)));
       resolved++;
     }
 
@@ -122,11 +122,16 @@ export class GlyphReverseMap {
    * its consonant and a reph after the base it belongs to, so the glyphs arrive
    * in an order no reader would type. This undoes both, which is the inverse of
    * what the shaper did on the way in.
+   *
+   * [fallback] supplies text for a glyph the font itself cannot name — one a
+   * subsetter left in the font but pruned from its `cmap`, as Word does with
+   * `ূ`. It is asked only for those, so a document's mapping never overrides
+   * what the font says about a glyph it does know.
    */
-  decodeRun(gids: number[]): string {
+  decodeRun(gids: number[], fallback?: (index: number) => string | undefined): string {
     const pieces: string[] = [];
-    for (const gid of gids) {
-      const text = this.textForGid.get(gid);
+    for (let i = 0; i < gids.length; i++) {
+      const text = this.textForGid.get(gids[i]!) ?? fallback?.(i);
       if (text !== undefined && text.length > 0) pieces.push(text);
     }
     return this.verify(recompose(toLogicalOrder(pieces)), gids);
@@ -181,7 +186,10 @@ export class GlyphReverseMap {
 }
 
 /** Reorders decoded pieces from visual to logical order. */
-function toLogicalOrder(pieces: string[]): string {
+function toLogicalOrder(drawn: string[]): string {
+  const pieces = splitFusedReph(drawn).filter(
+    (piece, i, all) => !(piece.trim().length === 0 && startsWithDependent(all[i + 1])),
+  );
   const out: string[] = [];
   let i = 0;
   while (i < pieces.length) {
@@ -194,9 +202,14 @@ function toLogicalOrder(pieces: string[]): string {
       // Skip over anything that is itself only a mark to find the base.
       while (j < pieces.length && isPreBaseMatraPiece(pieces[j]!)) j++;
       if (j < pieces.length && isBaseLike(pieces[j]!)) {
-        out.push(pieces[j]!);
+        // The sign follows the whole consonant cluster, not just its first
+        // glyph: a phala or nukta drawn after the base belongs before it, or
+        // লক্ষ্যে comes back as লক্ষে্য.
+        let end = j + 1;
+        while (end < pieces.length && extendsCluster(pieces[end]!)) end++;
+        for (let k = j; k < end; k++) out.push(pieces[k]!);
         for (let k = i; k < j; k++) out.push(pieces[k]!);
-        i = j + 1;
+        i = end;
         continue;
       }
     }
@@ -217,11 +230,85 @@ function toLogicalOrder(pieces: string[]): string {
   return out.join('');
 }
 
+/**
+ * Puts a pre-base vowel sign that leads a ligature's components after them.
+ *
+ * Many fonts fuse a pre-base vowel sign with its consonant into one glyph —
+ * `টি` is a single glyph in NikoshBAN — and they build it after reordering, so
+ * its components are listed in drawing order, `ি` first. Read back as they
+ * stand they give `িট`, which nobody types. A single glyph covers one cluster,
+ * so the sign belongs at the end of it.
+ */
+function preBaseMatraLast(runes: number[]): number[] {
+  if (runes.length < 2) return runes;
+  const first = runes[0]!;
+  if (categoryOf(first) !== IndicCategory.matra || !isPreBaseMatra(first)) return runes;
+  return [...runes.slice(1), first];
+}
+
 function isPreBaseMatraPiece(piece: string): boolean {
   const runes = [...piece];
   if (runes.length !== 1) return false;
   const cp = runes[0]!.codePointAt(0)!;
   return categoryOf(cp) === IndicCategory.matra && isPreBaseMatra(cp);
+}
+
+/**
+ * Separates a reph a font has fused with the mark after it.
+ *
+ * Fonts commonly draw `র্` and a following vowel sign as one glyph — `র্ী` in
+ * শিক্ষার্থী — so the piece is not a bare reph and would stay where it was
+ * drawn. Split off, the reph moves to the front of its cluster and the sign
+ * stays behind the base.
+ */
+function splitFusedReph(pieces: string[]): string[] {
+  const out: string[] = [];
+  for (const piece of pieces) {
+    const runes = [...piece].map((c) => c.codePointAt(0)!);
+    if (runes.length > 2 && runes[0] === RA && runes[1] === VIRAMA && runes.slice(2).every(isMark)) {
+      out.push(String.fromCodePoint(RA, VIRAMA), String.fromCodePoint(...runes.slice(2)));
+    } else {
+      out.push(piece);
+    }
+  }
+  return out;
+}
+
+/**
+ * Whether [piece] begins with something that cannot begin a word — a virama or
+ * a dependent sign.
+ *
+ * A blank piece in front of one is not a word break. Fonts often give the
+ * zero-width joiner the same glyph as a space, so `ল‍্যা`, typed with a joiner,
+ * is drawn as ল, space glyph, ্যা; read back literally it becomes `ল ্যা`.
+ */
+function startsWithDependent(piece: string | undefined): boolean {
+  const first = piece?.codePointAt(0);
+  if (first === undefined) return false;
+  // A pre-base vowel sign is the exception: it is drawn before its consonant,
+  // so in drawing order it does begin a word — the space before থেকে is real.
+  if (categoryOf(first) === IndicCategory.matra && isPreBaseMatra(first)) return false;
+  return first === VIRAMA || isMark(first);
+}
+
+/** Whether [rune] is a dependent sign rather than a letter of its own. */
+function isMark(rune: number): boolean {
+  const category = categoryOf(rune);
+  return (
+    category === IndicCategory.matra ||
+    category === IndicCategory.syllableModifier ||
+    category === IndicCategory.nukta
+  );
+}
+
+/**
+ * Whether [piece], drawn after a base consonant, is still part of its cluster
+ * ahead of any vowel sign: a phala or other virama-led form, or a nukta.
+ */
+function extendsCluster(piece: string): boolean {
+  const first = piece.codePointAt(0);
+  if (first === undefined) return false;
+  return first === VIRAMA || categoryOf(first) === IndicCategory.nukta;
 }
 
 /** Whether [piece] is the reph form: `র` followed by a virama. */

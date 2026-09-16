@@ -218,8 +218,25 @@ differently, so they are not pixel-compared.
 - Encrypted fixtures open for RC4 40-bit, RC4 128-bit, AES-128 and AES-256; a
   document with a real user password is reported as `isLocked` and opens when
   the password is supplied.
+- **A real Word export, repaired.** The NCTB primary assessment guideline (56
+  pages, Word 2013, NikoshBAN and SutonnyMJ) has a text layer Word scrambles:
+  its `/ToUnicode` maps pair glyphs with characters by position, so every pair
+  Bengali reorders comes out exchanged. Measured by the share of words Unicode
+  spelling rules out:
 
-**69 tests.** `hb-shape`, `hb-view` and `pdftotext` are needed for the
+  | reader | malformed Bangla words |
+  |---|---|
+  | poppler (`pdftotext`) | 24.8% |
+  | this package, 0.1.0 | 23.4% |
+  | this package, now | **1 of 14,448** |
+
+  The swaps depend on each document's words, so a fixed correction table
+  cannot undo them; the extractor notices a CMap that contradicts its own font
+  and reads the glyphs back through the font instead. Its SutonnyMJ runs are
+  genuine Bijoy and convert cleanly, and the four scanned pages among them are
+  offered to `ocrHook`.
+
+**78 tests.** `hb-shape`, `hb-view` and `pdftotext` are needed for the
 differential tests (`brew install harfbuzz poppler`); those tests skip without
 them, and the rest of the suite runs anyway.
 
@@ -245,10 +262,18 @@ These are measured, not guessed.
   dependency on the drawing or extraction path, and both bundle cleanly for the
   browser, but every number above was measured on Node. Treat browser support as
   designed-for and unverified.
-- **No real-world Bangla PDF has been measured.** The extraction fixtures are
-  generated, so their expected text is known exactly — which also means they
-  cannot surprise you the way a real government scan would. In particular, no
-  real *text-bearing* Bijoy document has been tested against this port.
+- **One real-world document has been measured.** The Word export above is the
+  only PDF this package did not produce that the suite reads; every other
+  extraction fixture is generated, so its expected text is known exactly but it
+  cannot surprise you the way a real document would. That document's Bijoy runs
+  are real SutonnyMJ text, but a document written *entirely* in Bijoy has not
+  been tested.
+- **Repairing a Word export is inference.** When a `/ToUnicode` contradicts its
+  font, the text is reconstructed from the glyphs and checked by re-shaping it
+  with HarfBuzz, and `confidence` counts such text at 0.75 rather than 1. It
+  needs the embedded font to keep its `cmap` and `GSUB`, which Word's subsets
+  do. In the measured document one table header still comes back split,
+  `শ্রে ণি`.
 - **Un-shaping needs the font's `GSUB`.** Recovering text from glyph ids alone
   reconstructs what most likely drew them. If the producer's subsetter dropped
   `GSUB` — many do, **this one included** — only characters the `cmap` reaches

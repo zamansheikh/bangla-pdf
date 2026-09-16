@@ -98,6 +98,10 @@ export interface ExtractionResult {
 /**
  * Called for a page with no text layer, to supply text from elsewhere.
  *
+ * "No text layer" includes a page that draws an image and carries no words —
+ * only a page number or stray punctuation, which is how Word stamps an inserted
+ * scan. Whatever the hook returns replaces that text.
+ *
  * This package does not bundle OCR. Wire in whatever engine you already have —
  * Tesseract with the `ben` language data is the usual choice.
  */
@@ -115,6 +119,15 @@ export interface ExtractOptions {
 }
 
 const BENGALI = /[ঀ-৿]/;
+
+/**
+ * How much a run recovered by reading glyphs back through the font counts
+ * towards confidence, against 1 for a run the document mapped itself. It is
+ * checked by re-shaping where HarfBuzz is available, so it is well above a
+ * guess; but it is inference, and a caller deciding whether to trust a page
+ * should be able to tell.
+ */
+const INFERRED_WEIGHT = 0.75;
 
 /**
  * Extracts the Bangla text of [bytes].
@@ -161,6 +174,7 @@ export async function extractBanglaText(
     let pageUnicode = false;
     let pageBijoy = false;
     let mapped = 0;
+    let inferred = 0;
     let unmapped = 0;
 
     let lastY: number | null = null;
@@ -189,7 +203,16 @@ export async function extractBanglaText(
       } else {
         buffer += run.text;
         if (BENGALI.test(run.text)) pageUnicode = true;
-        if (font === null || font.toUnicode.size === 0) unmapped++;
+        // Whitespace says nothing about how well a document was read. Word draws
+        // thousands of lone spaces in a mapping-free WinAnsi font; counted,
+        // they would bury a perfectly read page.
+        if (run.text.trim().length === 0) continue;
+        // Text read back through the font is inference, whether the document
+        // gave no mapping or one that had to be ignored: better than nothing,
+        // not as good as being told. A simple font's codes are defined by its
+        // encoding even without a CMap; only a CID font can say nothing at all.
+        if (font !== null && font.textMappingUntrusted && font.reverseMap !== null) inferred++;
+        else if (font === null || (font.toUnicode.size === 0 && font.codesAreGlyphIds)) unmapped++;
         else mapped++;
       }
     }
@@ -202,7 +225,11 @@ export async function extractBanglaText(
       hasImages: content.imageCount > 0,
     };
 
-    if (text.length === 0 && options.ocrHook !== undefined) {
+    // A page with an image and no words is a scan even if something is written
+    // on it: Word stamps a page number on an inserted scan, and that alone must
+    // not keep the page from OCR.
+    const wordless = !/\p{L}/u.test(text);
+    if (options.ocrHook !== undefined && (text.length === 0 || (page.hasImages && wordless))) {
       const recovered = options.ocrHook(page);
       if (recovered !== null && recovered !== undefined && recovered.length > 0) {
         text = recovered;
@@ -218,9 +245,10 @@ export async function extractBanglaText(
       counted++;
       certainty += content.actualTextUsed
         ? 1
-        : mapped + unmapped === 0
+        : mapped + inferred + unmapped === 0
           ? 0
-          : (mapped / (mapped + unmapped)) * (pageBijoy ? 0.85 : 1);
+          : ((mapped + inferred * INFERRED_WEIGHT) / (mapped + inferred + unmapped)) *
+            (pageBijoy ? 0.85 : 1);
     }
   }
 

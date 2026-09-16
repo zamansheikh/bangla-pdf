@@ -327,6 +327,13 @@ export class OtFont {
     return this.cmap.get(rune);
   }
 
+  /** Whether GSUB or GPOS has a Bengali script record (`bng2` or `beng`). */
+  get declaresBengaliScript(): boolean {
+    return [this.gsub, this.gpos].some(
+      (table) => table !== null && (table.hasScript('bng2') || table.hasScript('beng')),
+    );
+  }
+
   /**
    * Whether the font covers the Bengali block beyond a token codepoint or two.
    *

@@ -119,8 +119,29 @@ const NUKTA_COMPOSITION: ReadonlyArray<readonly [string, string]> = [
 /** Converts one Bijoy/ANSI run to Unicode Bangla. */
 export function bijoyToUnicode(ansi: string): string {
   if (ansi.length === 0) return ansi;
-  let text = restoreLogicalOrder(substitute(ansi));
+  let text = restoreLogicalOrder(substitute(canonicalBijoy(ansi)));
   for (const [from, to] of NUKTA_COMPOSITION) text = text.split(from).join(to);
+  return text;
+}
+
+/**
+ * Alternate glyph codes some Bijoy fonts use, and the canonical code each one
+ * stands for.
+ *
+ * The conversion table is generated from the forward Unicode-to-Bijoy mapping,
+ * which only ever writes the canonical code, so these can never appear in it.
+ * SutonnyMJ has a second e-kar and a second ra-phala, fitted to consonants the
+ * first ones clash with; a Word document using it writes প্রথম শ্রেণি as
+ * `cÖ_g †kÖwY` rather than `cª_g ‡kªwY`.
+ */
+const BIJOY_ALIASES: ReadonlyArray<readonly [string, string]> = [
+  ['\u2020', '\u2021'], // † -> ‡, e-kar
+  ['\u00D6', '\u00AA'], // Ö -> ª, ra-phala
+];
+
+function canonicalBijoy(ansi: string): string {
+  let text = ansi;
+  for (const [alias, canonical] of BIJOY_ALIASES) text = text.split(alias).join(canonical);
   return text;
 }
 
